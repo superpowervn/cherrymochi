@@ -1,0 +1,934 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Flappy • Denis — Chocobo & Cherries</title>
+  <style>
+    :root { color-scheme: light; }
+    body { margin:0; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background:#fdeff4; color:#6f3b50; }
+    .wrap { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100vh; gap:16px; padding:24px; }
+    .card { background:#fff7fb; border:1px solid #ffd5e5; border-radius:20px; padding:12px; box-shadow: 0 10px 30px rgba(255, 170, 200, 0.25); }
+    .btn { border:0; padding:10px 14px; border-radius:16px; cursor:pointer; }
+    .btn.primary { background:#b06b83; color:#fff; }
+    .btn.ghost { background:#ffe5ef; color:#6f3b50; }
+    .controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:center; }
+    h1 { font-size:22px; margin:0; color:#8e4f67; }
+    p { margin:6px 0; opacity:.9; }
+    canvas { display:block; border-radius:16px; cursor:pointer; }
+    .muted { opacity:.7 }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="header" style="text-align:center">
+      <h1>Flappy • Chocobo in Cherryland</h1>
+      <p class="muted">Click/Tap/Space để bay • P: pause • R: restart • M: mute</p>
+      <p id="scoreline">Score: <b>0</b> · Best: <b id="best">0</b></p>
+    </div>
+    <div class="card">
+      <canvas id="game"></canvas>
+    </div>
+    <div class="controls">
+      <button class="btn primary" id="btnStart">Start</button>
+      <button class="btn primary" id="btnRestart" style="display:none">Restart</button>
+      <button class="btn ghost" id="btnMute">Mute (M)</button>
+      <button class="btn ghost" id="btnPause">Pause (P)</button>
+    </div>
+  </div>
+
+<script>
+(function(){
+
+
+const winVoice = new Audio('chucmung.aac');
+winVoice.preload = 'auto';
+
+  // ====== Base constants/refs (giữ y hệt cảm giác vật lý của bản bạn gửi) ======
+  const DPR = window.devicePixelRatio || 1;
+  const LS_KEY = "flappy_best_score_v1_html";
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const elStart = document.getElementById('btnStart');
+  const elRestart = document.getElementById('btnRestart');
+  const elMute = document.getElementById('btnMute');
+  const elPause = document.getElementById('btnPause');
+  const elScore = document.querySelector('#scoreline b');
+  const elBest = document.getElementById('best');
+
+  let running=false, paused=false, ready=true, gameOver=false, completed=false;
+  let score=0, best=0, soundOn=true;
+
+  // World & physics — giữ nguyên như bản gốc bạn đưa
+  const world = {
+    w: 480, h: 800,
+    bird: { x: 140, y: 300, vy: 0, r: 16 },
+    gravity: 1400,
+    flap: -360,
+    pipes: [],
+    pipeGap: 160,
+    pipeSpeed: 180,
+    spawnEvery: 1.35,
+    spawnTimer: 0,
+    groundY: 740,
+    t: 0,
+  };
+
+  // ====== Phrase & letters ======
+  const PHRASE = "I LOVE DENIS";
+  const STEP_PER_LETTER = 1; // +5 điểm / ký tự
+  let letterIndex = 0;             // số ký tự (không tính space) đã nhận
+  let letterAnims = [];            // {ch, x,y, tx,ty, t, done}
+  const pastelPipes = ['#ffc7d8','#ffd9e6','#e3d9ff','#c9f2ff','#c7ffd9','#fff0c2'];
+
+  // ====== Cherries background ======
+  let cherries = [];
+ function initCherries(){
+  // ↓ ít cherry hơn: chia to hơn để giảm mật độ
+  const count = Math.max(12, Math.floor((world.w * world.h) / 40000));
+  cherries = [];
+  for (let i=0;i<count;i++){
+    // ↓ cherry to hơn (trước là ~6–14)
+    cherries.push({
+      x: Math.random()*world.w,
+      y: Math.random()*world.h,
+      r: 14 + Math.random()*12,    // kích cỡ ~14–26 px
+      t: Math.random()*Math.PI*2,
+      s: 0.25 + Math.random()*0.5  // tốc độ trôi chậm hơn 1 chút
+    });
+  }
+}
+
+
+  // ---- Sound (giữ lớp Sfx, sửa nhẹ gain cho dịu) ----
+  class Sfx {
+    constructor(){ this.ac=null; this.enabled=true; this.available=false; }
+    ensure() {
+      if (!this.enabled || this.ac) return;
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) { this.available=false; return; }
+        this.ac = new AC(); this.available=true;
+      } catch(e){ this.available=false; }
+    }
+    setEnabled(on){ this.enabled = on; }
+    playTone(setup){
+      if (!this.enabled) return;
+      this.ensure();
+      if (!this.ac || !this.available) return;
+      const ac=this.ac, o=ac.createOscillator(), g=ac.createGain();
+      setup(o,g,ac);
+      o.connect(g).connect(ac.destination);
+      const now = ac.currentTime;
+      o.start(now); o.stop(now+0.35);
+    }
+    chirp(f1, f2, dur=0.12, type="triangle", gain=0.05){
+      this.playTone((o,g,ac)=>{
+        g.gain.value=gain; o.type=type;
+        o.frequency.setValueAtTime(Math.max(40,f1), ac.currentTime);
+        o.frequency.exponentialRampToValueAtTime(Math.max(40,f2), ac.currentTime+dur);
+        g.gain.setValueAtTime(gain, ac.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime+dur);
+      });
+    }
+    blip(freq=220, dur=0.2, type="sawtooth", gain=0.06){
+      this.playTone((o,g,ac)=>{
+        o.type=type; o.frequency.value=freq; g.gain.value=gain;
+        g.gain.setValueAtTime(gain, ac.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime+dur);
+      });
+    }
+  }
+  const sfx = new Sfx();
+
+  function setUI(){
+    elScore.textContent = String(score);
+    elBest.textContent = String(Math.max(best, score));
+    elStart.style.display = (!running && !gameOver && !completed) ? '' : 'none';
+    elRestart.style.display = (gameOver || completed) ? '' : 'none';
+    elPause.textContent = paused ? 'Resume (P)' : 'Pause (P)';
+    elMute.textContent = soundOn ? 'Mute (M)' : 'Unmute (M)';
+  }
+
+  function resize(){
+    const parent = canvas.parentElement;
+    const maxW = parent && parent.clientWidth ? (parent.clientWidth - 24) : 480;
+    const targetW = Math.min(520, Math.max(320, maxW));
+    const targetH = Math.round(targetW * (800/480));
+    canvas.style.width = targetW+'px';
+    canvas.style.height = targetH+'px';
+    canvas.width = Math.floor(targetW * DPR);
+    canvas.height = Math.floor(targetH * DPR);
+    world.w = canvas.width / DPR;
+    world.h = canvas.height / DPR;
+    world.groundY = world.h - 60;
+    initCherries();
+  }
+
+  function resetGame(){
+    world.bird.x = world.w*0.3;
+    world.bird.y = world.h*0.4;
+    world.bird.vy = 0;
+    world.pipes = [];
+    world.spawnTimer = 0;
+    world.t = 0;
+    score = 0;
+    gameOver=false; ready=true; paused=false; running=false; completed=false;
+    letterIndex=0; letterAnims=[];
+    fireworks.length = 0;
+    fwLoopT = 0;
+
+// reset bão
+stormOn = false;
+rain.length = 0;
+rainSpawnT = 0;
+lightning.flash = 0;
+lightning.timer = 0;
+lightning.bolts.length = 0;
+
+
+    setUI();
+    drawFrame(0); // idle frame
+  }
+
+  function ensureAudio(){ sfx.setEnabled(soundOn); sfx.ensure(); }
+
+  function flap(){
+    world.bird.vy = world.flap;
+    ensureAudio();
+    sfx.chirp(900,1200,0.09,"sawtooth",0.045);
+  }
+
+  function startPlay(){
+    if (!running) running=true;
+    ready=false; paused=false;
+    ensureAudio();
+  }
+
+  function onUserFlap(){
+    if (gameOver || completed) return;
+    if (ready) startPlay();
+    flap();
+  }
+
+  // inputs
+  window.addEventListener('keydown', (e)=>{
+    if (e.repeat) return;
+    if (e.code === 'Space' || e.code === 'ArrowUp'){ e.preventDefault(); onUserFlap(); }
+    else if (e.code === 'KeyP'){ paused = !paused; setUI(); }
+    else if (e.code === 'KeyR'){ resetGame(); }
+    else if (e.code === 'KeyM'){ soundOn = !soundOn; sfx.setEnabled(soundOn); setUI(); }
+  });
+  canvas.addEventListener('mousedown', (e)=>{ e.preventDefault(); onUserFlap(); });
+  canvas.addEventListener('touchstart', (e)=>{ e.preventDefault(); onUserFlap(); }, {passive:false});
+
+  elStart.addEventListener('click', startPlay);
+  elRestart.addEventListener('click', resetGame);
+  elPause.addEventListener('click', ()=>{ paused=!paused; setUI(); });
+  elMute.addEventListener('click', ()=>{ soundOn=!soundOn; sfx.setEnabled(soundOn); setUI(); });
+
+  // loop
+  function loop(t){
+    const dt = Math.min(100, t - (loop.last||t))/1000; loop.last=t;
+    if (running && !paused && !gameOver && !completed) update(dt);
+    drawFrame(dt); // vẫn vẽ (để pháo hoa chạy) kể cả khi complete
+    requestAnimationFrame(loop);
+  }
+
+  function update(dt){
+    world.t += dt;
+    world.spawnTimer += dt;
+    if (world.spawnTimer >= world.spawnEvery){
+      world.spawnTimer = 0;
+      const gap = world.pipeGap;
+      const minY = 80;
+      const maxY = world.groundY - 80 - gap;
+      const gapY = Math.random() * (maxY - minY) + minY;
+      const pipeW = 70;
+      world.pipes.push({x: world.w + pipeW, w: pipeW, gapY, gapH: gap, scored:false, color: pastelPipes[Math.floor(Math.random()*pastelPipes.length)]});
+    }
+    world.pipes.forEach(p => p.x -= world.pipeSpeed * dt);
+    if (world.pipes.length && world.pipes[0].x + world.pipes[0].w < -10) world.pipes.shift();
+
+    world.bird.vy += world.gravity * dt;
+    world.bird.y += world.bird.vy * dt;
+
+    if (world.bird.y - world.bird.r < 0){ world.bird.y = world.bird.r; world.bird.vy = 0; }
+    if (world.bird.y + world.bird.r > world.groundY){ world.bird.y = world.groundY - world.bird.r; endGame(); }
+
+    const bx = world.bird.x, by = world.bird.y, br = world.bird.r;
+    for (const p of world.pipes){
+      if (!p.scored && bx > p.x + p.w){
+        p.scored = true;
+        score += 1; ensureAudio(); sfx.chirp(600,1200,0.12,"triangle",0.06);
+        elScore.textContent = String(score);
+        elBest.textContent = String(Math.max(best, score));
+
+        // Mốc nhận chữ mỗi +5 điểm
+        if (score % STEP_PER_LETTER === 0){
+          const ch = nextPhraseLetter(letterIndex);
+          if (ch){
+            launchLetter(ch, bx, by - br*1.2, letterIndex);
+            letterIndex++;
+            // nếu đã hết chữ (đã ghép đủ)
+            if (!nextPhraseLetter(letterIndex)){
+              // delay nhẹ cho chữ cuối "đậu" rồi ăn mừng
+              setTimeout(completeCelebration, 500);
+            }
+          }
+        }
+      }
+      const inX = bx + br > p.x && bx - br < p.x + p.w;
+      if (inX){
+        const topRect = {x:p.x, y:0, w:p.w, h:p.gapY};
+        const botRect = {x:p.x, y:p.gapY + p.gapH, w:p.w, h:world.groundY - (p.gapY + p.gapH)};
+        if (circleRectCollide(bx,by,br,topRect) || circleRectCollide(bx,by,br,botRect)) { endGame(); break; }
+      }
+    }
+  }
+
+  function endGame(){
+    if (gameOver || completed) return;
+    gameOver = true; running=false; paused=false; ready=false;
+    try { best = Math.max(best, score); localStorage.setItem(LS_KEY, String(best)); } catch {}
+    ensureAudio(); sfx.blip(110,0.25,"sawtooth",0.07); sfx.blip(70,0.3,"square",0.06);
+    setUI();
+stormOn = true;
+rain.length = 0;
+rainSpawnT = 0;
+lightning.flash = 0;
+lightning.timer = 0;
+lightning.next = 0.6 + Math.random()*1.4;
+lightning.bolts.length = 0;
+
+  }
+
+  // ====== Letters handling ======
+  function nextPhraseLetter(idx){
+    // trả về ký tự không phải space theo thứ tự
+    let k = -1;
+    for (let i=0;i<PHRASE.length;i++){
+      const ch = PHRASE[i];
+      if (ch !== ' '){
+        k++;
+        if (k === idx) return ch;
+      }
+    }
+    return null;
+  }
+
+  function measurePhrase(){
+    const s = Math.max(18, Math.floor(world.h*0.032));
+    ctx.font = `700 ${s}px Inter, system-ui, -apple-system, sans-serif`;
+    const totalW = ctx.measureText(PHRASE).width;
+    return { size:s, totalW };
+  }
+
+  function targetSlotPosFor(index){
+    const { size, totalW } = measurePhrase();
+    const startX = (world.w - totalW)/2;
+    const y = Math.max(28, world.h*0.08);
+    // tìm vị trí theo non-space index
+    let non=-1, x=startX;
+    for (let i=0;i<PHRASE.length;i++){
+      const ch = PHRASE[i];
+      const w = ctx.measureText(ch).width;
+      if (ch !== ' '){
+        non++;
+        if (non === index) return { x: x + w/2, y };
+      }
+      x += w;
+    }
+    return { x: world.w/2, y };
+  }
+
+  function launchLetter(ch, fromX, fromY, index){
+    const tPos = targetSlotPosFor(index);
+    letterAnims.push({ ch, x: fromX, y: fromY, tx: tPos.x, ty: tPos.y, t:0, done:false });
+  }
+
+  function updateLetters(dt){
+    const { size } = measurePhrase();
+    ctx.font = `700 ${size}px Inter, system-ui, -apple-system, sans-serif`;
+    for (const L of letterAnims){
+      if (!L.done){
+        L.t = Math.min(1, L.t + 0.04);
+        const ease = (t)=> 1 - Math.pow(1-t,3);
+        const et = ease(L.t);
+        L.x = L.x + (L.tx - L.x)*et;
+        L.y = L.y + (L.ty - L.y)*et;
+        if (L.t >= 1){ L.done = true; L.x=L.tx; L.y=L.ty; }
+      }
+      ctx.fillStyle = '#8e4f67';
+      ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+      ctx.fillText(L.ch, L.x, L.y);
+    }
+  }
+
+function makeTextGradient(ctx, x, y, w, h) {
+  // gradient dọc, tông hồng pastel
+  const g = ctx.createLinearGradient(x, y - h, x, y + h);
+  g.addColorStop(0.00, "#b06b83");  // tím hồng đậm
+  g.addColorStop(0.55, "#c98aa5");  // hồng trung tính
+  g.addColorStop(1.00, "#e6b9cb");  // hồng nhạt
+  return g;
+}
+
+function drawPhraseBar(){
+  const { size, totalW } = measurePhrase();
+  const startX = (world.w - totalW)/2;
+  const y = Math.max(28, world.h*0.08);
+
+  // pill nền
+  const padX=14, padY=10, r=16;
+  roundRect(ctx, startX - padX, y - size - 8, totalW + padX*2, size + padY*2, r);
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.fill();
+
+  // text — phần đã mở: gradient + shadow; chưa mở: mờ
+  ctx.font = `700 ${size}px Inter, system-ui, -apple-system, sans-serif`;
+  ctx.textAlign='left'; 
+  ctx.textBaseline='alphabetic';
+
+  // chuẩn bị hiệu ứng
+  const grad = makeTextGradient(ctx, startX, y, totalW, size);
+  ctx.shadowColor = "rgba(0,0,0,0.12)";
+  ctx.shadowBlur = 4;
+
+  let x = startX, non=-1;
+  for (let i=0;i<PHRASE.length;i++){
+    const ch = PHRASE[i];
+    const w = ctx.measureText(ch).width;
+    if (ch === ' '){ x += w; continue; }
+
+    non++;
+    ctx.fillStyle = (non < letterIndex) ? grad : 'rgba(142,79,103,0.25)';
+    ctx.fillText(ch, x, y);
+    x += w;
+  }
+  // reset shadow để không ảnh hưởng chỗ khác
+  ctx.shadowBlur = 0;
+}
+
+  function roundRect(c,x,y,w,h,r){
+    r = Math.min(r, w/2, h/2);
+    c.beginPath();
+    c.moveTo(x+r,y);
+    c.arcTo(x+w,y,x+w,y+h,r);
+    c.arcTo(x+w,y+h,x,y+h,r);
+    c.arcTo(x,y+h,x,y,r);
+    c.arcTo(x,y,x+w,y,r);
+    c.closePath();
+  }
+
+  // ====== Fireworks when complete ======
+  const fireworks = []; // particles
+  let fwLoopT = 0;                     // timer cho vòng lặp pháo hoa khi completed
+  const FIREWORK_INTERVAL = 0.9;       // mỗi 0.9s bắn thêm 1–2 chùm
+
+// ===== Storm (mưa + sét) khi game over =====
+let stormOn = false;
+
+const rain = [];                 // các hạt mưa
+let rainSpawnT = 0;
+const RAIN_SPAWN_RATE = 100;     // giọt/giây
+const RAIN_WIND = 140;           // gió thổi ngang
+
+const lightning = { flash:0, timer:0, next: 1.2, bolts:[] }; 
+// flash: độ sáng màn (0..1), timer: đếm thời gian, next: thời gian lần sét kế
+
+  function spawnFirework(x,y){
+    const N = 70;
+    for (let i=0;i<N;i++){
+      const a = (i/N)*Math.PI*2;
+      const sp = 80 + Math.random()*120;
+      fireworks.push({
+        x, y,
+        vx: Math.cos(a)*sp/60,
+        vy: Math.sin(a)*sp/60,
+        life: 0.9 + Math.random()*0.6,
+        col: ['#ff7aa2','#ffd166','#9ad0f5','#c5ffa8','#e7b3ff'][Math.floor(Math.random()*5)]
+      });
+    }
+  }
+
+function spawnRandomFireworks(){
+  const y = world.h * 0.26 + (Math.random()*30 - 15); // vùng phía trên
+  const bursts = 1 + (Math.random() < 0.5 ? 1 : 0);   // 1–2 chùm
+  for (let i=0; i<bursts; i++){
+    const x = (world.w/6) + Math.random() * (world.w*4/6);
+    spawnFirework(x, y);
+  }
+}
+
+
+  function completeCelebration(){
+
+try {
+  winVoice.currentTime = 0;
+  winVoice.play();
+} catch (e) {
+  console.warn('Không phát được âm thanh chúc mừng:', e);
+}
+
+    if (completed || gameOver) return;
+    completed = true; running=false; paused=false; ready=false;
+    try { best = Math.max(best, score); localStorage.setItem(LS_KEY, String(best)); } catch {}
+    // spawn nhiều tia pháo hoa ở trên
+    const y = world.h*0.28;
+    for (let i=0;i<6;i++){
+      const x = (world.w/7)*(i+1);
+      spawnFirework(x, y + (Math.random()*30-15));
+    }
+    setUI();
+  }
+  function updateFireworks(dt){
+    for (let i=fireworks.length-1;i>=0;i--){
+      const f = fireworks[i];
+      f.x += f.vx;
+      f.y += f.vy;
+      f.vy += 20*dt/2; // gravity nhẹ
+      f.life -= dt;
+      ctx.fillStyle = f.col;
+      ctx.globalAlpha = Math.max(0, Math.min(1, f.life));
+      ctx.beginPath(); ctx.arc(f.x, f.y, 2, 0, Math.PI*2); ctx.fill();
+      ctx.globalAlpha = 1;
+      if (f.life<=0) fireworks.splice(i,1);
+    }
+  }
+
+  // ---- drawing ----
+  function drawFrame(dt=0){
+    ctx.save();
+    ctx.scale(DPR, DPR);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const w = world.w, h = world.h;
+
+    drawPastelCherryBackground(ctx, w, h, world.t);
+    // pipes
+    for (const p of world.pipes){
+      drawPipePastel(ctx, p.x, 0, p.w, p.gapY, true, p.color);
+      drawPipePastel(ctx, p.x, p.gapY + p.gapH, p.w, world.groundY - (p.gapY + p.gapH), false, p.color);
+    }
+    // ground
+    drawSoftGround(ctx, w, world.groundY, h - world.groundY);
+
+    // bird
+    drawChocobo(ctx, world.bird.x, world.bird.y, world.bird.r, world.bird.vy);
+
+    // top phrase
+    drawPhraseBar();
+    updateLetters(dt);
+
+    // overlays / states
+    if (ready) drawCenterText(ctx, "Click / Tap / Space to start", w/2, h*0.42);
+    if (paused) drawCenterText(ctx, "Paused — press P", w/2, h*0.42);
+    if (gameOver){
+  	ctx.fillStyle = "rgba(0,0,0,0.15)";
+  	ctx.fillRect(0,0,w,h);
+
+  if (stormOn){
+    drawStormClouds(ctx, w, h, world.t);
+    updateAndDrawRain(ctx, dt);
+    updateAndDrawLightning(ctx, dt);
+  }
+
+  	drawMessage(ctx,
+    	"YOU DON'T LOVE ME :(((((（‿ɣ‿） Ɑ͞ ̶͞ ̶͞ ̶͞ لں͞",
+    	w/2, world.groundY*0.45,
+    	{ fontSize: 20 } // có thể 22–24 nếu màn rộng
+ 	 );
+  	drawMessage(ctx, "Press R to restart", w/2, world.groundY*0.45 + 80, { fontSize: 16 });
+	}
+
+   if (completed){
+  // 1) Tăng timer & respawn thêm pháo hoa
+  fwLoopT += dt;
+  if (fwLoopT >= FIREWORK_INTERVAL){
+    fwLoopT = 0;
+    spawnRandomFireworks(); // hoặc tự gọi spawnFirework(...) với các toạ độ bạn thích
+  }
+
+  // 2) Vẽ pháo hoa TRƯỚC khung chữ để nằm ở nền
+	updateFireworks(dt);
+
+  	drawMessage(ctx,
+   	 "❤︎ BÉ CƯNG GIỎI LẮM! THƯỞNG NGÀN NỤ HÔN VÀO ... ⸜(｡˃ ᵕ ˂ )⸝♡❤︎",
+  	  w/2, h*0.46,
+  	  { fontSize: 20 }
+	  );
+ 	 drawMessage(ctx, "Press R to play again", w/2, h*0.46 + 80, { fontSize: 16 });
+	}
+
+    ctx.restore();
+  }
+
+  // ==== Visuals ====
+
+function drawStormClouds(ctx, w, h, t){
+  // cụm mây xám trôi ngang
+  ctx.save();
+  for (let i=0;i<5;i++){
+    const cx = ((i*220 - (t*40)) % (w+320)) - 160;
+    const cy = h*0.18 + Math.sin((t+i)*0.6)*10;
+    const g = ctx.createRadialGradient(cx, cy, 20, cx, cy, 130);
+    g.addColorStop(0, "rgba(60,70,80,0.85)");
+    g.addColorStop(1, "rgba(40,45,55,0.0)");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.ellipse(cx, cy, 160, 70, 0, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---------- Rain ----------
+function spawnRainBurst(){
+  const w = world.w;
+  const n = Math.max(20, Math.floor(w/12));
+
+  // overscan để phủ kín mép theo hướng gió
+  const overscan = Math.max(60, RAIN_WIND * 0.6); // 60–100px là ổn
+
+  for (let i=0; i<n; i++){
+    // CHỖ QUAN TRỌNG: spawn từ [-overscan, w+overscan]
+    const x = -overscan + Math.random() * (w + overscan*2);
+    const y = -Math.random()*80;
+    const speed = 700 + Math.random()*500;
+    const len = 8 + Math.random()*10;
+    rain.push({ x, y, vy: speed, len });
+  }
+}
+
+function updateAndDrawRain(ctx, dt){
+  // sinh thêm theo thời gian
+ctx.lineCap = "round";
+
+  rainSpawnT += dt * RAIN_SPAWN_RATE;
+  while (rainSpawnT >= 1){ spawnRainBurst(); rainSpawnT -= 1; }
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(180,190,210,0.75)";
+  ctx.lineWidth = 1;
+  for (let i=rain.length-1;i>=0;i--){
+    const r = rain[i];
+    r.x += (RAIN_WIND * dt);
+    r.y += r.vy * dt;
+
+    // vẽ giọt (đường xiên)
+    ctx.beginPath();
+    ctx.moveTo(r.x, r.y);
+    ctx.lineTo(r.x - RAIN_WIND*0.03, r.y - r.len);
+    ctx.stroke();
+
+    if (r.y > world.groundY) rain.splice(i,1);
+  }
+  ctx.restore();
+}
+
+
+function unlockAudioOnce(){
+  const unlock = () => {
+    try {
+      sfx.ensure();               // tạo AudioContext nếu chưa có
+      if (sfx.ac && sfx.ac.state === 'suspended') sfx.ac.resume();
+    } catch (e) {}
+    window.removeEventListener('touchstart', unlock);
+    window.removeEventListener('mousedown', unlock);
+    window.removeEventListener('keydown', unlock);
+  };
+  window.addEventListener('touchstart', unlock, {passive:true});
+  window.addEventListener('mousedown', unlock);
+  window.addEventListener('keydown', unlock);
+}
+unlockAudioOnce();
+
+
+// ---------- Lightning ----------
+function spawnLightning(){
+  // 1 tia sét rơi từ mây xuống vị trí ngẫu nhiên
+  const x = world.w*0.2 + Math.random()*world.w*0.6;
+  const y0 = world.h*0.12, y1 = world.h*0.6;
+  // tạo đường gãy khúc
+  const seg = 9 + Math.floor(Math.random()*4);
+  const pts = [{x, y:y0}];
+  for (let i=1;i<seg;i++){
+    const px = x + (Math.random()*40 - 20);
+    const py = y0 + (i/seg)*(y1-y0) + Math.random()*10;
+    pts.push({x:px, y:py});
+  }
+  pts.push({x: x + (Math.random()*50-25), y:y1});
+
+  lightning.bolts.push({ pts, life: 0.18 });  // tồn tại 0.18s
+  lightning.flash = 0.7;                      // chớp sáng toàn màn
+  lightning.next = 0.9 + Math.random()*1.6;   // lần kế 0.9–2.5s
+  lightning.timer = 0;
+}
+function updateAndDrawLightning(ctx, dt){
+  lightning.timer += dt;
+  if (lightning.timer >= lightning.next){
+    spawnLightning();
+  }
+
+  // vẽ bolt
+  for (let i=lightning.bolts.length-1;i>=0;i--){
+    const b = lightning.bolts[i];
+    b.life -= dt;
+    const alpha = Math.max(0, b.life / 0.18); // fade nhanh
+    ctx.strokeStyle = `rgba(255,255,255,${0.9*alpha})`;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(b.pts[0].x, b.pts[0].y);
+    for (let j=1;j<b.pts.length;j++) ctx.lineTo(b.pts[j].x, b.pts[j].y);
+    ctx.stroke();
+
+    // quầng xanh nhạt
+    ctx.strokeStyle = `rgba(170,220,255,${0.45*alpha})`;
+    ctx.lineWidth = 6; ctx.stroke();
+
+    if (b.life<=0) lightning.bolts.splice(i,1);
+  }
+
+  // chớp sáng phủ màn
+  if (lightning.flash > 0){
+    lightning.flash = Math.max(0, lightning.flash - dt*2.8);
+    ctx.fillStyle = `rgba(255,255,255,${lightning.flash})`;
+    ctx.fillRect(0,0,world.w,world.h);
+  }
+}
+
+
+  function drawPastelCherryBackground(ctx,w,h,t){
+    const sky = ctx.createLinearGradient(0,0,0,h);
+    sky.addColorStop(0, "#fff7fb");
+    sky.addColorStop(1, "#ffeef5");
+    ctx.fillStyle = sky; ctx.fillRect(0,0,w,h);
+
+    // đám mây nhẹ
+    ctx.fillStyle = "rgba(255,255,255,0.55)";
+    for (let i=0;i<5;i++){
+      const cx = ((i*200 + (t*30)) % (w+300)) - 150;
+      const cy = h*0.18 + Math.sin((t+i)*0.7)*12;
+      ctx.beginPath(); ctx.ellipse(cx, cy, 120, 40, 0, 0, Math.PI*2); ctx.fill();
+    }
+
+    // cherries trôi
+ctx.save();
+ctx.globalAlpha = 0.22;  // độ mờ
+
+    for (const c of cherries){
+      const yy = c.y + Math.sin(c.t + t*c.s)*3;
+      drawCherry(ctx, c.x, yy, c.r, c.t + t*c.s);
+    }
+
+ctx.restore();
+
+  }
+
+  function drawCherry(ctx,x,y,r,t){
+    ctx.save();
+    ctx.translate(x,y);
+    ctx.rotate(Math.sin(t)*0.05);
+    // stems
+    ctx.lineWidth = Math.max(1, r*0.15);
+    ctx.strokeStyle = '#9fc59e';
+    ctx.beginPath();
+    ctx.moveTo(-r*0.3, -r*1.1); ctx.quadraticCurveTo(-r*0.6, -r*1.5, 0, -r*1.6); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo( r*0.3, -r*1.1); ctx.quadraticCurveTo( r*0.6, -r*1.5, 0, -r*1.6); ctx.stroke();
+    // leaf
+    ctx.fillStyle = '#bfe6be';
+    ctx.beginPath(); ctx.ellipse(0, -r*1.45, r*0.6, r*0.28, Math.PI/6, 0, Math.PI*2); ctx.fill();
+    // cherries
+    ctx.fillStyle = '#ffb3c7'; ctx.beginPath(); ctx.arc(-r*0.45, -r*0.2, r, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#ffc7d8'; ctx.beginPath(); ctx.arc( r*0.45, -r*0.2, r, 0, Math.PI*2); ctx.fill();
+    // highlight
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.beginPath(); ctx.ellipse(-r*0.7, -r*0.5, r*0.3, r*0.18, 0, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+
+  function drawPipePastel(ctx,x,y,w,h,top,color){
+    if (h<=0) return;
+    ctx.fillStyle = color || '#ffd9e6';
+    ctx.strokeStyle = '#e1b9c7'; ctx.lineWidth=2;
+    ctx.fillRect(x,y,w,h); ctx.strokeRect(x,y,w,h);
+    const bandH=16; ctx.fillStyle="rgba(255,255,255,0.35)";
+    // inner highlight
+    ctx.fillRect(x+4, y+4, 8, Math.max(0,h-8));
+    // cap
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    if (top){ ctx.fillRect(x-6, y+h-bandH, w+12, bandH); }
+    else { ctx.fillRect(x-6, y, w+12, bandH); }
+  }
+
+  function drawSoftGround(ctx,w,y,h){
+    ctx.fillStyle="#ffe1ec"; ctx.fillRect(0,y,w,h);
+    ctx.fillStyle="#ffd1e6"; for (let i=0; i<w; i+=36) ctx.fillRect(i,y,18,h);
+  }
+
+  function drawChocobo(ctx,x,y,r,vy){
+    const tilt = Math.max(-0.6, Math.min(0.6, vy/400));
+    ctx.save(); ctx.translate(x,y); ctx.rotate(tilt);
+
+    // body
+    ctx.fillStyle = '#ffd75a';
+    ctx.beginPath(); ctx.ellipse(0, 0, r*1.05, r*0.85, 0, 0, Math.PI*2); ctx.fill();
+
+    // wing (flap)
+    const flap = Math.sin(performance.now()*0.02)*0.3;
+    ctx.save(); ctx.rotate(flap);
+    ctx.fillStyle = '#ffea9e';
+    ctx.beginPath(); ctx.ellipse(-r*0.1, -r*0.05, r*0.7, r*0.45, -0.6, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
+
+    // head
+    ctx.fillStyle = '#ffdd66';
+    ctx.beginPath(); ctx.arc(r*0.9, -r*0.35, r*0.65, 0, Math.PI*2); ctx.fill();
+
+    // hair tuft
+    ctx.strokeStyle = '#ffcc33';
+    ctx.lineWidth = Math.max(1, r*0.12);
+    ctx.beginPath(); ctx.moveTo(r*0.9, -r*1.0); ctx.quadraticCurveTo(r*1.2, -r*1.2, r*1.1, -r*0.6); ctx.stroke();
+
+    // beak
+    ctx.fillStyle = '#ffac3e';
+    ctx.beginPath();
+    ctx.moveTo(r*1.35, -r*0.3);
+    ctx.lineTo(r*1.75, -r*0.15);
+    ctx.lineTo(r*1.35,  -r*0.05);
+    ctx.closePath(); ctx.fill();
+
+    // eye
+    ctx.fillStyle = '#333';
+    ctx.beginPath(); ctx.arc(r*1.1, -r*0.35, r*0.12, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = 'white';
+    ctx.beginPath(); ctx.arc(r*1.07, -r*0.38, r*0.05, 0, Math.PI*2); ctx.fill();
+
+    // legs
+    ctx.strokeStyle = '#e08a3d';
+    ctx.lineWidth = Math.max(1, r*0.12);
+    ctx.beginPath(); ctx.moveTo(-r*0.1, r*0.7); ctx.lineTo(-r*0.2, r*1.2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo( r*0.1, r*0.7); ctx.lineTo( 0,    r*1.2); ctx.stroke();
+
+    // feet
+    ctx.beginPath(); ctx.moveTo(-r*0.2, r*1.2); ctx.lineTo(-r*0.5, r*1.2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo( 0,      r*1.2); ctx.lineTo( r*0.3, r*1.2); ctx.stroke();
+
+    ctx.restore();
+  }
+
+  function drawCenterText(ctx,text,x,y,size=24){
+    // pill bg
+    ctx.fillStyle="rgba(255,255,255,0.6)";
+    const pad = 12;
+    ctx.font = "600 "+size+"px Inter, system-ui, -apple-system, sans-serif";
+    const w = ctx.measureText(text).width;
+    roundRect(ctx, x-w/2-pad, y-size-8, w+pad*2, size+24, 18);
+    ctx.fill();
+
+    ctx.fillStyle="#8e4f67";
+    ctx.textAlign="center"; ctx.textBaseline="middle";
+    ctx.fillText(text,x,y);
+  }
+
+// Tính các dòng vừa khít maxWidth (word wrap)
+function wrapText(ctx, text, maxWidth) {
+  const words = text.split(/\s+/);
+  const lines = [];
+  let line = "";
+  for (let w of words) {
+    const test = line ? line + " " + w : w;
+    if (ctx.measureText(test).width <= maxWidth) {
+      line = test;
+    } else {
+      if (line) lines.push(line);
+      // Nếu 1 từ còn lại vẫn dài quá, cắt thô theo ký tự
+      if (ctx.measureText(w).width > maxWidth) {
+        let chunk = "";
+        for (let ch of w) {
+          const test2 = chunk + ch;
+          if (ctx.measureText(test2).width <= maxWidth) chunk = test2;
+          else { lines.push(chunk); chunk = ch; }
+        }
+        line = chunk;
+      } else {
+        line = w;
+      }
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+// Gradient chữ nhẹ nhàng
+function makeTextGradient(ctx, x, y, w, h) {
+  const g = ctx.createLinearGradient(x, y - h, x, y + h);
+  g.addColorStop(0, "#b06b83");
+  g.addColorStop(1, "#d9a6ba");
+  return g;
+}
+
+// Vẽ message đa dòng có nền bo tròn, tự ngắt dòng
+function drawMessage(ctx, text, centerX, centerY, {
+  fontSize = 24, maxWidth = null, lineGap = 8, padX = 14, padY = 12, radius = 18
+} = {}) {
+  ctx.font = `600 ${fontSize}px Inter, system-ui, -apple-system, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  const usableW = (maxWidth ?? (world.w * 0.86));   // chừa lề 7% mỗi bên
+  const lines = wrapText(ctx, text, usableW);
+
+  const lineH = fontSize * 1.2;
+  const blockH = lines.length * lineH + (lines.length - 1) * lineGap;
+  const blockW = Math.min(
+    usableW,
+    Math.max(...lines.map(l => ctx.measureText(l).width))
+  );
+
+  // Nền pill
+  ctx.fillStyle = "rgba(255,255,255,0.75)";
+  roundRect(ctx,
+    centerX - blockW / 2 - padX,
+    centerY - blockH / 2 - padY,
+    blockW + padX * 2,
+    blockH + padY * 2,
+    radius
+  );
+  ctx.fill();
+
+  // Bóng chữ nhẹ
+  ctx.shadowColor = "rgba(0,0,0,0.15)";
+  ctx.shadowBlur = 6;
+
+  // Gradient chữ
+  ctx.fillStyle = makeTextGradient(ctx, centerX, centerY, blockW, blockH);
+
+  // Vẽ từng dòng
+  let y = centerY - (blockH - lineH) / 2;
+  for (const ln of lines) {
+    ctx.fillText(ln, centerX, y);
+    y += lineH + lineGap;
+  }
+
+  // reset shadow
+  ctx.shadowBlur = 0;
+}
+
+
+  function circleRectCollide(cx,cy,r,rect){
+    const closestX = Math.max(rect.x, Math.min(cx, rect.x+rect.w));
+    const closestY = Math.max(rect.y, Math.min(cy, rect.y+rect.h));
+    const dx=cx-closestX, dy=cy-closestY; return dx*dx+dy*dy < r*r;
+  }
+
+  // bootstrap
+  try { best = Number(localStorage.getItem(LS_KEY) || 0); } catch(e){}
+  setUI();
+  resize();
+  window.addEventListener('resize', resize);
+  resetGame();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
