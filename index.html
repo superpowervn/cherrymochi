@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Flappy • Denis — Chocobo & Cherries</title>
+  <title>Denis — Mochi & Cherry</title>
   <style>
     :root { color-scheme: light; }
     body { margin:0; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background:#fdeff4; color:#6f3b50; }
@@ -22,9 +22,9 @@
 <body>
   <div class="wrap">
     <div class="header" style="text-align:center">
-      <h1>Flappy • Chocobo in Cherryland</h1>
-      <p class="muted">Click/Tap/Space để bay • P: pause • R: restart • M: mute</p>
-      <p id="scoreline">Score: <b>0</b> · Best: <b id="best">0</b></p>
+      <h1>Cherry • Mochi in Denisland</h1>
+      <p class="muted">Bé bấm để bay nhé • P: pause • R: restart • M: mute</p>
+      <p id="scoreline">Tình cảm: <b>0</b> · Tình cảm tối đa: <b id="best">0</b></p>
     </div>
     <div class="card">
       <canvas id="game"></canvas>
@@ -40,9 +40,13 @@
 <script>
 (function(){
 
+const HITBOX_SCALE = 1.25;  // to hơn 1.5x
 
 const winVoice = new Audio('chucmung.aac');
 winVoice.preload = 'auto';
+
+const birdImg = new Image();
+birdImg.src = 'mochi.png';
 
   // ====== Base constants/refs (giữ y hệt cảm giác vật lý của bản bạn gửi) ======
   const DPR = window.devicePixelRatio || 1;
@@ -62,7 +66,7 @@ winVoice.preload = 'auto';
   // World & physics — giữ nguyên như bản gốc bạn đưa
   const world = {
     w: 480, h: 800,
-    bird: { x: 140, y: 300, vy: 0, r: 16 },
+    bird: { x: 140, y: 300, vy: 0, r: 16 * HITBOX_SCALE },
     gravity: 1400,
     flap: -360,
     pipes: [],
@@ -521,7 +525,7 @@ try {
     updateLetters(dt);
 
     // overlays / states
-    if (ready) drawCenterText(ctx, "Click / Tap / Space to start", w/2, h*0.42);
+    if (ready) drawCenterText(ctx, "Bé click hay chạm tay nhé!", w/2, h*0.42);
     if (paused) drawCenterText(ctx, "Paused — press P", w/2, h*0.42);
     if (gameOver){
   	ctx.fillStyle = "rgba(0,0,0,0.15)";
@@ -553,7 +557,7 @@ try {
 	updateFireworks(dt);
 
   	drawMessage(ctx,
-   	 "❤︎ BÉ CƯNG GIỎI LẮM! THƯỞNG NGÀN NỤ HÔN VÀO ... ⸜(｡˃ ᵕ ˂ )⸝♡❤︎",
+   	 "❤︎ BÉ CƯNG GIỎI LẮM! THƯỞNG NGÀN NỤ HÔN VÀO ....... HÍ HÍ ⸜(｡˃ ᵕ ˂ )⸝♡❤︎",
   	  w/2, h*0.46,
   	  { fontSize: 20 }
 	  );
@@ -765,56 +769,23 @@ ctx.restore();
     ctx.fillStyle="#ffd1e6"; for (let i=0; i<w; i+=36) ctx.fillRect(i,y,18,h);
   }
 
-  function drawChocobo(ctx,x,y,r,vy){
-    const tilt = Math.max(-0.6, Math.min(0.6, vy/400));
-    ctx.save(); ctx.translate(x,y); ctx.rotate(tilt);
+function drawChocobo(ctx, x, y, r, vy) {
+    const tilt = Math.max(-0.6, Math.min(0.6, vy / 400));
 
-    // body
-    ctx.fillStyle = '#ffd75a';
-    ctx.beginPath(); ctx.ellipse(0, 0, r*1.05, r*0.85, 0, 0, Math.PI*2); ctx.fill();
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(tilt);
 
-    // wing (flap)
-    const flap = Math.sin(performance.now()*0.02)*0.3;
-    ctx.save(); ctx.rotate(flap);
-    ctx.fillStyle = '#ffea9e';
-    ctx.beginPath(); ctx.ellipse(-r*0.1, -r*0.05, r*0.7, r*0.45, -0.6, 0, Math.PI*2); ctx.fill();
-    ctx.restore();
-
-    // head
-    ctx.fillStyle = '#ffdd66';
-    ctx.beginPath(); ctx.arc(r*0.9, -r*0.35, r*0.65, 0, Math.PI*2); ctx.fill();
-
-    // hair tuft
-    ctx.strokeStyle = '#ffcc33';
-    ctx.lineWidth = Math.max(1, r*0.12);
-    ctx.beginPath(); ctx.moveTo(r*0.9, -r*1.0); ctx.quadraticCurveTo(r*1.2, -r*1.2, r*1.1, -r*0.6); ctx.stroke();
-
-    // beak
-    ctx.fillStyle = '#ffac3e';
-    ctx.beginPath();
-    ctx.moveTo(r*1.35, -r*0.3);
-    ctx.lineTo(r*1.75, -r*0.15);
-    ctx.lineTo(r*1.35,  -r*0.05);
-    ctx.closePath(); ctx.fill();
-
-    // eye
-    ctx.fillStyle = '#333';
-    ctx.beginPath(); ctx.arc(r*1.1, -r*0.35, r*0.12, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle = 'white';
-    ctx.beginPath(); ctx.arc(r*1.07, -r*0.38, r*0.05, 0, Math.PI*2); ctx.fill();
-
-    // legs
-    ctx.strokeStyle = '#e08a3d';
-    ctx.lineWidth = Math.max(1, r*0.12);
-    ctx.beginPath(); ctx.moveTo(-r*0.1, r*0.7); ctx.lineTo(-r*0.2, r*1.2); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo( r*0.1, r*0.7); ctx.lineTo( 0,    r*1.2); ctx.stroke();
-
-    // feet
-    ctx.beginPath(); ctx.moveTo(-r*0.2, r*1.2); ctx.lineTo(-r*0.5, r*1.2); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo( 0,      r*1.2); ctx.lineTo( r*0.3, r*1.2); ctx.stroke();
+    // Tính tỉ lệ scale dựa trên bán kính r
+const VISUAL_SCALE = 1.25; // <-- to hơn 1.5x
+const scale = (r * 2 * VISUAL_SCALE) / birdImg.width;
+const drawW = birdImg.width * scale;
+const drawH = birdImg.height * scale;
+ctx.drawImage(birdImg, -drawW / 2, -drawH / 2, drawW, drawH);
 
     ctx.restore();
-  }
+}
+
 
   function drawCenterText(ctx,text,x,y,size=24){
     // pill bg
