@@ -44,25 +44,27 @@ const HITBOX_SCALE = 1.25;  // to hơn 1.5x
 
 const winVoice = new Audio('chucmung.aac');
 winVoice.preload = 'auto';
+winVoice.volume = 1;
 
 const birdImg = new Image();
 birdImg.src = 'mochi.png';
 
 
-// --- BGM ---
-const bgm = new Audio('laputa.mp3');   // file để cùng thư mục với HTML
+const bgm = new Audio('laputa.mp3');
 bgm.loop = true;
 bgm.preload = 'auto';
-bgm.volume = 0.25;                      // chỉnh nhỏ cho dịu tai (0..1)
+bgm.volume = 0.25;
 
-// helper điều khiển nhạc theo trạng thái mute
-function updateBgm() {
-  if (soundOn) {
-    bgm.play().catch(()=>{});           // có thể bị chặn trước khi user tương tác
+
+function updateBgm(){
+  if (soundOn){
+    bgm.play().catch(()=>{});  // có thể bị chặn nếu chưa có user gesture
   } else {
     bgm.pause();
   }
 }
+
+let winVoicePlayed = false; // tránh phát chồng khi completeCelebration() chạy lại
 
 
 document.addEventListener('keydown', () => { bgm.load(); }, { once:true });
@@ -508,26 +510,51 @@ function spawnRandomFireworks(){
 }
 
 
-  function completeCelebration(){
+function completeCelebration(){
+  if (completed || gameOver) return;
+  completed = true; running=false; paused=false; ready=false;
+  try { best = Math.max(best, score); localStorage.setItem(LS_KEY, String(best)); } catch {}
 
-try {
-  winVoice.currentTime = 0;
-  winVoice.play();
-} catch (e) {
-  console.warn('Không phát được âm thanh chúc mừng:', e);
+  // --- Audio: tạm dừng BGM, phát tiếng chúc mừng, rồi resume ---
+  if (!winVoicePlayed) {
+    winVoicePlayed = true;
+    const wasPlayingBgm = !bgm.paused;
+    try {
+      // tắt/duck BGM để không lấn tiếng chúc mừng
+      bgm.pause(); // (nếu thích "duck" thay vì pause: const oldVol=bgm.volume; bgm.volume=0.08;)
+
+      winVoice.currentTime = 0;
+      const p = winVoice.play();
+      if (p && typeof p.then === 'function') {
+        p.catch(e => console.warn('Không phát được chúc mừng:', e));
+      }
+
+      // khi phát xong thì bật lại BGM nếu chưa mute
+      winVoice.onended = () => {
+        if (soundOn && wasPlayingBgm) {
+          bgm.play().catch(()=>{});
+        }
+        // nếu dùng "duck": bgm.volume = oldVol;
+      };
+
+    } catch (e) {
+      console.warn('Không phát được chúc mừng:', e);
+      // lỗi thì cố gắng bật lại BGM nếu cần
+      if (soundOn && wasPlayingBgm) {
+        bgm.play().catch(()=>{});
+      }
+    }
+  }
+
+  // --- Pháo hoa (chạy ngay, không đợi audio) ---
+  const y = world.h*0.28;
+  for (let i=0;i<6;i++){
+    const x = (world.w/7)*(i+1);
+    spawnFirework(x, y + (Math.random()*30-15));
+  }
+  setUI();
 }
 
-    if (completed || gameOver) return;
-    completed = true; running=false; paused=false; ready=false;
-    try { best = Math.max(best, score); localStorage.setItem(LS_KEY, String(best)); } catch {}
-    // spawn nhiều tia pháo hoa ở trên
-    const y = world.h*0.28;
-    for (let i=0;i<6;i++){
-      const x = (world.w/7)*(i+1);
-      spawnFirework(x, y + (Math.random()*30-15));
-    }
-    setUI();
-  }
   function updateFireworks(dt){
     for (let i=fireworks.length-1;i>=0;i--){
       const f = fireworks[i];
@@ -677,7 +704,30 @@ function unlockAudioOnce(){
       sfx.ensure();
       if (sfx.ac && sfx.ac.state === 'suspended') sfx.ac.resume();
     } catch (e) {}
-    updateBgm(); // ← thử phát nhạc sau tương tác đầu tiên
+
+    // Prime/mồi audio để iOS cho phép phát về sau
+    try { bgm.load(); } catch {}
+    try { winVoice.load(); } catch {}
+
+    (async () => {
+      try {
+        // mồi winVoice
+        winVoice.muted = true;
+        await winVoice.play();
+        winVoice.pause();
+        winVoice.currentTime = 0;
+        winVoice.muted = false;
+      } catch {}
+      try {
+        // mồi bgm
+        await bgm.play();
+        bgm.pause();
+        bgm.currentTime = 0;
+      } catch {}
+      // Sau khi đã có gesture -> bật BGM nếu chưa mute
+      updateBgm();
+    })();
+
     window.removeEventListener('touchstart', unlock);
     window.removeEventListener('mousedown', unlock);
     window.removeEventListener('keydown', unlock);
