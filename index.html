@@ -48,6 +48,26 @@ winVoice.preload = 'auto';
 const birdImg = new Image();
 birdImg.src = 'mochi.png';
 
+
+// --- BGM ---
+const bgm = new Audio('laputa.mp3');   // file để cùng thư mục với HTML
+bgm.loop = true;
+bgm.preload = 'auto';
+bgm.volume = 0.25;                      // chỉnh nhỏ cho dịu tai (0..1)
+
+// helper điều khiển nhạc theo trạng thái mute
+function updateBgm() {
+  if (soundOn) {
+    bgm.play().catch(()=>{});           // có thể bị chặn trước khi user tương tác
+  } else {
+    bgm.pause();
+  }
+}
+
+
+document.addEventListener('keydown', () => { bgm.load(); }, { once:true });
+document.addEventListener('touchstart', () => { bgm.load(); }, { once:true });
+
   // ====== Base constants/refs (giữ y hệt cảm giác vật lý của bản bạn gửi) ======
   const DPR = window.devicePixelRatio || 1;
   const LS_KEY = "flappy_best_score_v1_html";
@@ -80,7 +100,7 @@ birdImg.src = 'mochi.png';
 
   // ====== Phrase & letters ======
   const PHRASE = "I LOVE DENIS";
-  const STEP_PER_LETTER = 1; // +5 điểm / ký tự
+  const STEP_PER_LETTER = 5; // +5 điểm / ký tự
   let letterIndex = 0;             // số ký tự (không tính space) đã nhận
   let letterAnims = [];            // {ch, x,y, tx,ty, t, done}
   const pastelPipes = ['#ffc7d8','#ffd9e6','#e3d9ff','#c9f2ff','#c7ffd9','#fff0c2'];
@@ -203,11 +223,12 @@ lightning.bolts.length = 0;
     sfx.chirp(900,1200,0.09,"sawtooth",0.045);
   }
 
-  function startPlay(){
-    if (!running) running=true;
-    ready=false; paused=false;
-    ensureAudio();
-  }
+function startPlay(){
+  if (!running) running=true;
+  ready=false; paused=false;
+  ensureAudio();
+  updateBgm(); // ← đảm bảo nhạc chạy
+}
 
   function onUserFlap(){
     if (gameOver || completed) return;
@@ -216,12 +237,27 @@ lightning.bolts.length = 0;
   }
 
   // inputs
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    bgm.pause();
+  } else if (soundOn) {
+    bgm.play().catch(()=>{});
+  }
+});
+
+
   window.addEventListener('keydown', (e)=>{
     if (e.repeat) return;
     if (e.code === 'Space' || e.code === 'ArrowUp'){ e.preventDefault(); onUserFlap(); }
     else if (e.code === 'KeyP'){ paused = !paused; setUI(); }
     else if (e.code === 'KeyR'){ resetGame(); }
-    else if (e.code === 'KeyM'){ soundOn = !soundOn; sfx.setEnabled(soundOn); setUI(); }
+else if (e.code === 'KeyM'){ 
+  soundOn = !soundOn; 
+  sfx.setEnabled(soundOn); 
+  updateBgm();        // ← thêm dòng này
+  setUI(); 
+}
   });
   canvas.addEventListener('mousedown', (e)=>{ e.preventDefault(); onUserFlap(); });
   canvas.addEventListener('touchstart', (e)=>{ e.preventDefault(); onUserFlap(); }, {passive:false});
@@ -229,7 +265,13 @@ lightning.bolts.length = 0;
   elStart.addEventListener('click', startPlay);
   elRestart.addEventListener('click', resetGame);
   elPause.addEventListener('click', ()=>{ paused=!paused; setUI(); });
-  elMute.addEventListener('click', ()=>{ soundOn=!soundOn; sfx.setEnabled(soundOn); setUI(); });
+elMute.addEventListener('click', ()=>{
+  soundOn=!soundOn; 
+  sfx.setEnabled(soundOn); 
+  updateBgm();        // ← thêm dòng này
+  setUI(); 
+});
+
 
   // loop
   function loop(t){
@@ -632,9 +674,10 @@ ctx.lineCap = "round";
 function unlockAudioOnce(){
   const unlock = () => {
     try {
-      sfx.ensure();               // tạo AudioContext nếu chưa có
+      sfx.ensure();
       if (sfx.ac && sfx.ac.state === 'suspended') sfx.ac.resume();
     } catch (e) {}
+    updateBgm(); // ← thử phát nhạc sau tương tác đầu tiên
     window.removeEventListener('touchstart', unlock);
     window.removeEventListener('mousedown', unlock);
     window.removeEventListener('keydown', unlock);
